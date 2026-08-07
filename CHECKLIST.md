@@ -4,8 +4,8 @@
 02. [x] Play a file passed as a CLI argument
 03. [x] Pause / resume / stop the currently playing file
 04. [x] Volume control
-05. [-] Structured CLI with subcommands (play, pause, stop, etc.)
-06. [ ] Download a single audio file from a YouTube link
+05. [ ] Structured CLI with subcommands (play, pause, stop, etc.)
+06. [x] Download a single audio file from a YouTube link
 07. [ ] Extract and store metadata for a downloaded file (title, artist/channel, thumbnail)
 08. [ ] Combined download-then-play flow for a single link
 09. [ ] Default tmp download folder
