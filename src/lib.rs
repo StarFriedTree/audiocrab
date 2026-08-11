@@ -14,7 +14,11 @@ pub fn run() {
 	let args = Cli::parse();
 
 	if let Some(link) = args.download.as_deref() {
-		download::download_from_link(link);
+		if args.no_embed_metadata == Some(true) {
+			download::download_without_metadata(link);
+		} else {
+			download::download_from_link(link, &args);
+		}
 		return;
 	}
 

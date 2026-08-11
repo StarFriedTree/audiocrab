@@ -5,9 +5,9 @@ use std::{
     sync::Arc,
 };
 
-use rodio::{Decoder, DeviceSinkBuilder, Player};
+use rodio::{Decoder, DeviceSinkBuilder, Player, MixerDeviceSink};
 
-pub fn start_player(audio_file: &Path) -> Arc<Player> {
+pub fn start_player(audio_file: &Path) -> (Arc<Player>, MixerDeviceSink) {
     let handle = DeviceSinkBuilder::open_default_sink()
         .expect("Failed to open default audio stream");
 
@@ -18,5 +18,5 @@ pub fn start_player(audio_file: &Path) -> Arc<Player> {
     let source = Decoder::new(reader).expect("failed to decode audio");
 
     player.append(source);
-    player
+    (player, handle)
 }

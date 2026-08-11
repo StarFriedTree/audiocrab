@@ -10,7 +10,7 @@ use rodio::Player;
 use crate::{cli::Commands, ipc, playback};
 
 pub fn run(sock_name: Name<'static>, audio_file: PathBuf) {
-    let player = playback::start_player(&audio_file);
+    let (player, _handle) = playback::start_player(&audio_file);
 
     let listener = match ListenerOptions::new().name(sock_name).create_sync() {
         Err(e) if e.kind() == io::ErrorKind::AddrInUse => {

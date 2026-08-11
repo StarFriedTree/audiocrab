@@ -17,11 +17,18 @@ pub struct Cli {
     /// download link (must be supported by yt-dlp)
     #[arg(long, short, visible_alias = "URL", alias = "link")]
     pub download: Option<String>,
+
+    /// don't embed metadata to the audiofile
+    #[arg(long, num_args = 0..=1, default_missing_value = "true" )]
+    pub no_embed_metadata: Option<bool>,
     
     /// control commands sent to running player
     #[command(subcommand)]
     pub command: Option<Commands>,
 
+    /// browser to pull cookies from (for auth-gated downloads)
+    #[arg(long, value_enum)]
+    pub cookies_from_browser: Option<Browser>,
 }
 
 #[derive(Subcommand, Serialize, Deserialize, Debug, Clone)]
@@ -36,3 +43,15 @@ pub enum Commands {
     Name,
 }
 
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum Browser {
+    Brave,
+    Chrome,
+    Chromium,
+    Edge,
+    Firefox,
+    Opera,
+    Safari,
+    Vivaldi,
+    Whale,
+}
