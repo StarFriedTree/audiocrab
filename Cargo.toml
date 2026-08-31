@@ -4,9 +4,21 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.5", features = ["derive"] }
+dirs = "6.0.0"
+fslock = "0.2.1"
 interprocess = "2.4.3"
+rayon = "1.12.0"
 rodio = { version = "0.22.2", features = ["symphonia-all"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+tempfile = "3.27.0"
+thiserror = "2.0.20"
+toml = "1.1.4"
 url = "2.5.8"
+
+[profile.dev]
+debug = 0

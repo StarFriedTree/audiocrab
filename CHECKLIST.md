@@ -6,14 +6,14 @@
 04. [x] Volume control
 05. [-] Structured CLI with subcommands (play, pause, stop, etc.)
 06. [x] Download a single audio file from a YouTube link
-07. [-] Extract and store metadata for a downloaded file (title, artist/channel, thumbnail)
+07. [x] Extract and store metadata for a downloaded file (title, artist/channel, thumbnail)
 08. [ ] Combined download-then-play flow for a single link
-09. [ ] Shared library folder for all downloaded files (flat layout for now)
-10. [ ] Local database schema: tracks table (path, metadata, play stats, liked flag)
-11. [ ] DB-based dedup check by source video ID before downloading (replaces archive.txt)
-12. [ ] Persistent app config file (library path, DB path, defaults)
-13. [ ] Playlists table + playlist_tracks join table (many-to-many, with position/order)
-14. [ ] Batch-download a YouTube playlist: register each track in DB, link to playlist
+09. [x] Shared library folder for all downloaded files (flat layout for now)
+10. [x] Local database schema: tracks table (path, metadata, play stats, liked flag)
+11. [x] DB-based dedup check by source video ID before downloading (replaces archive.txt)
+12. [x] Persistent app config file (library path, DB path, defaults)
+13. [x] Playlists table + playlist_tracks join table (many-to-many, with position/order)
+14. [x] Batch-download a YouTube playlist: register each track in DB, link to playlist
 15. [ ] Playback of a playlist by querying ordered tracks from DB
 16. [ ] Rescan library folder to register manually-added files as tracks without disrupting existing DB entries
 17. [ ] Sorting playlist/library by metadata via DB query (title, artist, date added)
@@ -28,13 +28,13 @@
 26. [ ] Delete a whole playlist (join-table cleanup, tracks themselves untouched)
 27. [ ] Enforce single active playback session (new selection drops the old one)
 28. [ ] Split playback engine into a long-running background server process
-29. [ ] Client/server IPC via local socket (interprocess crate), connect-or-become-server logic
-30. [ ] Basic line/text-based command protocol (play/pause/stop/status/skip/name/close)
+29. [x] Client/server IPC via local socket (interprocess crate), connect-or-become-server logic
+30. [x] Basic line/text-based command protocol (play/pause/stop/status/skip/name/close)
 31. [ ] Launch server detached from the terminal (Windows: respawn detached / CREATE_NO_WINDOW)
 32. [ ] Explicit close/exit command for the server
 33. [ ] Wait-for-completion behavior when no close command is given
 34. [ ] Streaming playback without downloading first (optional)
-35. [ ] Directory sharding for library folder if track count grows large (optional, later)
+35. [x] Directory sharding for library folder if track count grows large (optional, later)
 36. [ ] Audit and split responsibilities across modules/processes for minimal idle resource use
 37. [ ] CLI polish (help text, config overrides, error messages)
 38. [ ] Minimal GUI widget window showing current track + basic controls

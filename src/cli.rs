@@ -1,7 +1,6 @@
-use clap::{ Parser, Subcommand };
-use serde::{ Deserialize, Serialize };
+use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-
 
 #[derive(Parser, Debug)]
 #[command(name = "crabaudio", about = "Headless background music player")]
@@ -16,12 +15,8 @@ pub struct Cli {
 
     /// download link (must be supported by yt-dlp)
     #[arg(long, short, visible_alias = "URL", alias = "link")]
-    pub download: Option<String>,
+    pub download: Option<String>, 
 
-    /// don't embed metadata to the audiofile
-    #[arg(long, num_args = 0..=1, default_missing_value = "true" )]
-    pub no_embed_metadata: Option<bool>,
-    
     /// control commands sent to running player
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -41,9 +36,20 @@ pub enum Commands {
     Skip,
     Stop,
     Name,
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(Subcommand, Serialize, Deserialize, Debug, Clone)]
+pub enum ConfigAction {
+    Get { key: String },
+    Set { key: String, value: String },
+    Path,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]
 pub enum Browser {
     Brave,
     Chrome,
