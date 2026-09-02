@@ -48,15 +48,24 @@ pub struct DownloadedFile {
     pub thumbnail_path: Option<PathBuf>,
 }
 
-pub fn download_from_link(link: &str, _cfg: &Config) -> Result<String> {
-    let flat = resolve_flat(link, _cfg)?;
+pub fn download_from_link(link: &str, config: &Config) -> Result<String> {
+    let flat = resolve_flat(link, config)?;
     Ok(serde_json::to_string_pretty(&flat)?)
 }
 
-pub fn resolve_flat(link: &str, _cfg: &Config) -> Result<Vec<FlatEntry>> {
+pub fn resolve_flat(link: &str, config: &Config) -> Result<Vec<FlatEntry>> {
     let parsed = Url::parse(link).context("invalid URL")?;
-    let output = Command::new("yt-dlp")
-        .args(["--flat-playlist", "-j", "--no-warnings", "--ignore-errors", parsed.as_str()])
+    let mut cmd = Command::new("yt-dlp");
+    cmd.args(["--flat-playlist", "-j", "--no-warnings", "--ignore-errors"]);
+    
+    // Apply cookies if configured, for auth-gated playlists
+    if let Some(browser) = &config.cookies_from_browser {
+        let browser_str = format!("{browser:?}").to_ascii_lowercase();
+        cmd.arg("--cookies-from-browser").arg(browser_str);
+    }
+    
+    cmd.arg(parsed.as_str());
+    let output = cmd
         .output()
         .with_context(|| format!("failed to run yt-dlp for {link}"))?;
 
@@ -123,13 +132,20 @@ pub fn resolve_flat(link: &str, _cfg: &Config) -> Result<Vec<FlatEntry>> {
     Ok(entries)
 }
 
-pub fn resolve_full(urls: &[String], _cfg: &Config) -> Result<Vec<VideoMeta>> {
+pub fn resolve_full(urls: &[String], config: &Config) -> Result<Vec<VideoMeta>> {
     if urls.is_empty() {
         return Ok(Vec::new());
     }
 
     let mut cmd = Command::new("yt-dlp");
     cmd.args(["-j", "--no-warnings", "--ignore-errors"]);
+    
+    // Apply cookies if configured, for auth-gated videos
+    if let Some(browser) = &config.cookies_from_browser {
+        let browser_str = format!("{browser:?}").to_ascii_lowercase();
+        cmd.arg("--cookies-from-browser").arg(browser_str);
+    }
+    
     for url in urls {
         cmd.arg(url);
     }
@@ -188,9 +204,9 @@ pub fn resolve_full(urls: &[String], _cfg: &Config) -> Result<Vec<VideoMeta>> {
     Ok(metas)
 }
 
-pub fn download_one(meta: &VideoMeta, cfg: &Config) -> Result<DownloadedFile> {
+pub fn download_one(meta: &VideoMeta, config: &Config) -> Result<DownloadedFile> {
     // Use a per-video subdirectory in temp to avoid parallel download conflicts
-    let video_temp_dir = cfg.temp_dir.join(&meta.extractor_id);
+    let video_temp_dir = config.temp_dir.join(&meta.extractor_id);
     fs::create_dir_all(&video_temp_dir)?;
 
     let mut cmd = Command::new("yt-dlp");
@@ -202,7 +218,7 @@ pub fn download_one(meta: &VideoMeta, cfg: &Config) -> Result<DownloadedFile> {
         .arg("-P")
         .arg(&video_temp_dir)
         .arg("--retries")
-        .arg(cfg.retries.to_string())
+        .arg(config.retries.to_string())
         .arg("--continue")
         .arg("--ignore-errors")
         .arg("--embed-metadata")
@@ -211,7 +227,7 @@ pub fn download_one(meta: &VideoMeta, cfg: &Config) -> Result<DownloadedFile> {
         .arg("jpg")
         .arg("--no-warnings");
 
-    if let Some(browser) = &cfg.cookies_from_browser {
+    if let Some(browser) = &config.cookies_from_browser {
         let browser_str = format!("{browser:?}").to_ascii_lowercase();
         cmd.arg("--cookies-from-browser").arg(browser_str);
     }
@@ -224,7 +240,7 @@ pub fn download_one(meta: &VideoMeta, cfg: &Config) -> Result<DownloadedFile> {
     }
 
     let (audio_path, thumbnail_path) = find_downloaded_files(&video_temp_dir)?;
-    let bucket_dir = bucket_dir_for_id(&cfg.download_dir, &meta.id);
+    let bucket_dir = bucket_dir_for_id(&config.download_dir, &meta.id);
     fs::create_dir_all(&bucket_dir)?;
 
     let final_audio = move_to_bucket(&audio_path, &bucket_dir)?;
@@ -244,11 +260,15 @@ pub fn download_one(meta: &VideoMeta, cfg: &Config) -> Result<DownloadedFile> {
 }
 
 fn find_downloaded_files(temp_dir: &Path) -> Result<(PathBuf, Option<PathBuf>)> {
-    let mut audio_path = None;
-    let mut thumbnail_path = None;
+    // In a per-video temp directory, there should only be the audio and thumbnail files
+    // yt-dlp placed them there per our output template
+    let mut audio_file = None;
+    let mut thumb_file = None;
 
     for entry in fs::read_dir(temp_dir)? {
-        let path = entry?.path();
+        let entry = entry?;
+        let path = entry.path();
+        
         if !path.is_file() {
             continue;
         }
@@ -259,20 +279,20 @@ fn find_downloaded_files(temp_dir: &Path) -> Result<(PathBuf, Option<PathBuf>)> 
             .unwrap_or("")
             .to_ascii_lowercase();
 
-        if audio_path.is_none() && is_audio_ext(&ext) {
-            audio_path = Some(path);
-            continue;
+        // Audio files: we extracted audio to ogg format
+        if ext == "ogg" && audio_file.is_none() {
+            audio_file = Some(path);
         }
-
-        if thumbnail_path.is_none() && is_image_ext(&ext) {
-            thumbnail_path = Some(path);
+        // Thumbnail: we converted to jpg format
+        else if ext == "jpg" && thumb_file.is_none() {
+            thumb_file = Some(path);
         }
     }
 
-    Ok((
-        audio_path.context("yt-dlp did not place an audio file in the temp directory")?,
-        thumbnail_path,
-    ))
+    let audio_path = audio_file
+        .context("yt-dlp did not produce an audio file (.ogg) in the temp directory")?;
+    
+    Ok((audio_path, thumb_file))
 }
 
 fn bucket_dir_for_id(download_dir: &Path, video_id: &str) -> PathBuf {
@@ -310,17 +330,6 @@ fn move_to_bucket(src: &Path, bucket_dir: &Path) -> Result<PathBuf> {
     }
 
     Ok(candidate)
-}
-
-fn is_audio_ext(ext: &str) -> bool {
-    matches!(
-        ext,
-        "mp3" | "m4a" | "aac" | "opus" | "ogg" | "flac" | "wav" | "webm"
-    )
-}
-
-fn is_image_ext(ext: &str) -> bool {
-    matches!(ext, "jpg" | "jpeg" | "png" | "webp" | "bmp")
 }
 
 fn opt_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>

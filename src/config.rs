@@ -33,7 +33,7 @@ impl Default for Config {
             download_dir: download_dir,
             db_path: root.join("audiocrab.db"),
             cookies_from_browser: None,
-            concurrency: 3,
+            concurrency: 4,
             retries: 10,
         }
     }

@@ -40,7 +40,12 @@ pub fn run() {
         return;
     }
 
-    if let Some(link) = args.download.as_deref() {      
+    if let Some(link) = args.download.as_deref() {
+        // CLI argument --cookies-from-browser overrides config setting
+        let mut cfg = cfg;
+        if let Some(browser) = args.cookies_from_browser {
+            cfg.cookies_from_browser = Some(browser);
+        }
 		match job::run_download_job(link, &cfg) {
 			Ok(summary) => println!("{summary:?}"),
 			Err(err) => eprintln!("download job failed: {err}"),
