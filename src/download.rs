@@ -1,6 +1,5 @@
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -29,17 +28,19 @@ pub struct VideoMeta {
     pub extractor: String,
     pub extractor_id: String,
     pub title: String,
-    #[serde(default, deserialize_with = "opt_string")] 
+    #[serde(default, deserialize_with = "opt_string")]
     pub artist: Option<String>,
-    #[serde(default, deserialize_with = "opt_string")] 
+    #[serde(default, deserialize_with = "opt_string")]
     pub album: Option<String>,
     #[serde(default)]
     pub duration: Option<f64>,
-    #[serde(default, deserialize_with = "opt_string")] 
+    #[serde(default, deserialize_with = "opt_string")]
     pub upload_date: Option<String>,
     pub webpage_url: String,
-    #[serde(default, deserialize_with = "opt_string")] 
+    #[serde(default, deserialize_with = "opt_string")]
     pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    pub audio_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,13 +58,13 @@ pub fn resolve_flat(link: &str, config: &Config) -> Result<Vec<FlatEntry>> {
     let parsed = Url::parse(link).context("invalid URL")?;
     let mut cmd = Command::new("yt-dlp");
     cmd.args(["--flat-playlist", "-j", "--no-warnings", "--ignore-errors"]);
-    
+
     // Apply cookies if configured, for auth-gated playlists
     if let Some(browser) = &config.cookies_from_browser {
         let browser_str = format!("{browser:?}").to_ascii_lowercase();
         cmd.arg("--cookies-from-browser").arg(browser_str);
     }
-    
+
     cmd.arg(parsed.as_str());
     let output = cmd
         .output()
@@ -139,18 +140,20 @@ pub fn resolve_full(urls: &[String], config: &Config) -> Result<Vec<VideoMeta>> 
 
     let mut cmd = Command::new("yt-dlp");
     cmd.args(["-j", "--no-warnings", "--ignore-errors"]);
-    
+
     // Apply cookies if configured, for auth-gated videos
     if let Some(browser) = &config.cookies_from_browser {
         let browser_str = format!("{browser:?}").to_ascii_lowercase();
         cmd.arg("--cookies-from-browser").arg(browser_str);
     }
-    
+
     for url in urls {
         cmd.arg(url);
     }
 
-    let output = cmd.output().with_context(|| "failed to run yt-dlp detailed metadata lookup")?;
+    let output = cmd
+        .output()
+        .with_context(|| "failed to run yt-dlp detailed metadata lookup")?;
     // Don't bail on non-zero exit; yt-dlp exits non-zero if any item failed.
     // We accept partial success as long as we got some JSON lines.
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -187,17 +190,30 @@ pub fn resolve_full(urls: &[String], config: &Config) -> Result<Vec<VideoMeta>> 
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_owned(),
-            artist: value.get("artist").and_then(Value::as_str).map(str::to_owned),
-            album: value.get("album").and_then(Value::as_str).map(str::to_owned),
+            artist: value
+                .get("artist")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            album: value
+                .get("album")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             duration: value.get("duration").and_then(Value::as_f64),
-            upload_date: value.get("upload_date").and_then(Value::as_str).map(str::to_owned),
+            upload_date: value
+                .get("upload_date")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             webpage_url: value
                 .get("webpage_url")
                 .or_else(|| value.get("url"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .unwrap_or_default(),
-            thumbnail_url: value.get("thumbnail").and_then(Value::as_str).map(str::to_owned),
+            thumbnail_url: value
+                .get("thumbnail")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            audio_path: None,
         });
     }
 
@@ -234,7 +250,9 @@ pub fn download_one(meta: &VideoMeta, config: &Config) -> Result<DownloadedFile>
 
     cmd.arg(&meta.webpage_url);
 
-    let status = cmd.status().with_context(|| format!("failed to download {}", meta.title))?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("failed to download {}", meta.title))?;
     if !status.success() {
         anyhow::bail!("yt-dlp download failed for {}", meta.title);
     }
@@ -268,7 +286,7 @@ fn find_downloaded_files(temp_dir: &Path) -> Result<(PathBuf, Option<PathBuf>)> 
     for entry in fs::read_dir(temp_dir)? {
         let entry = entry?;
         let path = entry.path();
-        
+
         if !path.is_file() {
             continue;
         }
@@ -289,9 +307,9 @@ fn find_downloaded_files(temp_dir: &Path) -> Result<(PathBuf, Option<PathBuf>)> 
         }
     }
 
-    let audio_path = audio_file
-        .context("yt-dlp did not produce an audio file (.ogg) in the temp directory")?;
-    
+    let audio_path =
+        audio_file.context("yt-dlp did not produce an audio file (.ogg) in the temp directory")?;
+
     Ok((audio_path, thumb_file))
 }
 
@@ -314,7 +332,10 @@ fn move_to_bucket(src: &Path, bucket_dir: &Path) -> Result<PathBuf> {
     let mut candidate = bucket_dir.join(&name);
     let mut index = 1;
     while candidate.exists() {
-        let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("download");
+        let stem = src
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("download");
         let ext = src.extension().and_then(|s| s.to_str()).unwrap_or("");
         candidate = bucket_dir.join(format!("{stem}_{index}.{ext}"));
         index += 1;

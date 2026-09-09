@@ -1,11 +1,8 @@
-use std::{
-    collections::HashSet,
-    path::Path,
-};
+use std::{collections::HashSet, path::Path};
 
-use anyhow::{Result};
+use anyhow::Result;
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::download::VideoMeta;
 
@@ -70,6 +67,16 @@ impl Db {
                 added_at    TEXT NOT NULL,
                 position    INTEGER,
                 PRIMARY KEY (video_id, tag_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS player_state (
+                id            INTEGER PRIMARY KEY CHECK (id = 0),
+                mode          TEXT NOT NULL,
+                sort_key      TEXT,
+                filter_json   TEXT NOT NULL,
+                seed          INTEGER,
+                cursor        INTEGER NOT NULL,
+                updated_at    TEXT NOT NULL
             );",
         )?;
 
@@ -84,7 +91,8 @@ impl Db {
         let placeholders = vec!["?"; ids.len()].join(", ");
         // Only return videos that have successfully completed (status='complete')
         // Failed videos should be retried, not skipped
-        let sql = format!("SELECT id FROM videos WHERE id IN ({placeholders}) AND status = 'complete'");
+        let sql =
+            format!("SELECT id FROM videos WHERE id IN ({placeholders}) AND status = 'complete'");
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |row| row.get(0))?;
 
@@ -169,7 +177,11 @@ impl Db {
         Ok(())
     }
 
-    pub fn link_video_source_playlist(&self, video_id: &str, source_playlist_id: &str) -> Result<()> {
+    pub fn link_video_source_playlist(
+        &self,
+        video_id: &str,
+        source_playlist_id: &str,
+    ) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO video_source_playlists (video_id, source_playlist_id) VALUES (?, ?)",
             params![video_id, source_playlist_id],
@@ -222,7 +234,8 @@ impl Db {
     }
 
     pub fn delete_tag(&self, tag_id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM tags WHERE id = ?", params![tag_id])?;
+        self.conn
+            .execute("DELETE FROM tags WHERE id = ?", params![tag_id])?;
         Ok(())
     }
 
@@ -253,6 +266,7 @@ impl Db {
                 upload_date: row.get("upload_date")?,
                 webpage_url: row.get("webpage_url")?,
                 thumbnail_url: row.get("thumbnail_url")?,
+                audio_path: None,
             })
         })?;
 
@@ -277,6 +291,259 @@ impl Db {
             params![weight, timestamp(), video_id],
         )?;
         Ok(())
+    }
+
+    pub fn list_tags(&self) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name FROM tags ORDER BY name")?;
+        let rows = stmt.query_map([], |row| Ok((row.get("id")?, row.get("name")?)))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    pub fn list_source_playlists(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title FROM source_playlists ORDER BY title")?;
+        let rows = stmt.query_map([], |row| Ok((row.get("id")?, row.get("title")?)))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    pub fn get_video_meta(&self, id: &str) -> Result<VideoMeta> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, extractor, extractor_id, title, artist, album, duration, upload_date, webpage_url, thumbnail_url, audio_path
+             FROM videos WHERE id = ?"
+        )?;
+
+        let meta = stmt.query_row(params![id], |row| {
+            Ok(VideoMeta {
+                id: row.get("id")?,
+                extractor: row.get("extractor")?,
+                extractor_id: row.get("extractor_id")?,
+                title: row.get("title")?,
+                artist: row.get("artist")?,
+                album: row.get("album")?,
+                duration: row.get("duration")?,
+                upload_date: row.get("upload_date")?,
+                webpage_url: row.get("webpage_url")?,
+                thumbnail_url: row.get("thumbnail_url")?,
+                audio_path: row
+                    .get::<_, Option<String>>("audio_path")?
+                    .map(std::path::PathBuf::from),
+            })
+        })?;
+
+        Ok(meta)
+    }
+
+    pub fn upsert_player_state(
+        &self,
+        mode: &str,
+        sort_key: Option<&str>,
+        filter_json: &str,
+        seed: Option<u64>,
+        cursor: usize,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO player_state (id, mode, sort_key, filter_json, seed, cursor, updated_at)
+             VALUES (0, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                mode = excluded.mode,
+                sort_key = excluded.sort_key,
+                filter_json = excluded.filter_json,
+                seed = excluded.seed,
+                cursor = excluded.cursor,
+                updated_at = excluded.updated_at",
+            params![
+                mode,
+                sort_key,
+                filter_json,
+                seed.map(|value| value as i64),
+                cursor as i64,
+                timestamp()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_player_state(
+        &self,
+    ) -> Result<Option<(String, Option<String>, String, Option<i64>, i32)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT mode, sort_key, filter_json, seed, cursor FROM player_state WHERE id = 0",
+        )?;
+
+        let result = stmt
+            .query_row([], |row| {
+                Ok((
+                    row.get("mode")?,
+                    row.get("sort_key")?,
+                    row.get("filter_json")?,
+                    row.get("seed")?,
+                    row.get("cursor")?,
+                ))
+            })
+            .optional()?;
+
+        Ok(result)
+    }
+
+    pub fn filtered_video_ids_and_weights(
+        &self,
+        filter: &crate::cli::FilterSpec,
+    ) -> Result<Vec<(String, f64)>> {
+        let mut sql = String::from("SELECT v.id, v.weight FROM videos v");
+
+        let mut join_tag = false;
+        let mut join_playlist = false;
+
+        // Collect conditions for WHERE clause
+        let mut conditions: Vec<String> = vec![];
+
+        let mut params: Vec<String> = vec![];
+
+        if let Some(ref artist) = filter.artist {
+            conditions.push("v.artist = ?".to_string());
+            params.push(artist.clone());
+        }
+
+        if let Some(ref album) = filter.album {
+            conditions.push("v.album = ?".to_string());
+            params.push(album.clone());
+        }
+
+        if let Some(ref playlist) = filter.playlist {
+            join_playlist = true;
+            conditions.push("sp.title = ?".to_string());
+            params.push(playlist.clone());
+        }
+
+        if !filter.tags.is_empty() {
+            join_tag = true;
+            let placeholders = vec!["?"; filter.tags.len()].join(", ");
+            conditions.push(format!("t.name IN ({placeholders})"));
+            params.extend(filter.tags.iter().cloned());
+        }
+
+        // Add JOINs
+        if join_playlist {
+            sql.push_str(" JOIN video_source_playlists vsp ON v.id = vsp.video_id JOIN source_playlists sp ON vsp.source_playlist_id = sp.id");
+        }
+        if join_tag {
+            sql.push_str(
+                " JOIN video_tags vt ON v.id = vt.video_id JOIN tags t ON vt.tag_id = t.id",
+            );
+        }
+
+        sql.push_str(" WHERE v.status = 'complete'");
+
+        // Combine conditions with match_mode
+        if !conditions.is_empty() {
+            let where_clause = if filter.match_mode == "or" {
+                format!(" AND ({})", conditions.join(" OR "))
+            } else {
+                format!(" AND ({})", conditions.join(" AND "))
+            };
+            sql.push_str(&where_clause);
+        }
+
+        sql.push_str(" GROUP BY v.id ORDER BY v.weight DESC, v.id");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((row.get("id")?, row.get("weight")?))
+        })?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    pub fn filtered_video_ids_sorted(
+        &self,
+        filter: &crate::cli::FilterSpec,
+        sort_key: &str,
+        descending: bool,
+    ) -> Result<Vec<String>> {
+        let mut sql = String::from("SELECT v.id FROM videos v");
+
+        let mut join_tag = false;
+        let mut join_playlist = false;
+        let mut conditions: Vec<String> = vec![];
+
+        let mut params: Vec<String> = vec![];
+
+        if let Some(ref artist) = filter.artist {
+            conditions.push("v.artist = ?".to_string());
+            params.push(artist.clone());
+        }
+
+        if let Some(ref album) = filter.album {
+            conditions.push("v.album = ?".to_string());
+            params.push(album.clone());
+        }
+
+        if let Some(ref playlist) = filter.playlist {
+            join_playlist = true;
+            conditions.push("sp.title = ?".to_string());
+            params.push(playlist.clone());
+        }
+
+        if !filter.tags.is_empty() {
+            join_tag = true;
+            let placeholders = vec!["?"; filter.tags.len()].join(", ");
+            conditions.push(format!("t.name IN ({placeholders})"));
+            params.extend(filter.tags.iter().cloned());
+        }
+
+        if join_playlist {
+            sql.push_str(" JOIN video_source_playlists vsp ON v.id = vsp.video_id JOIN source_playlists sp ON vsp.source_playlist_id = sp.id");
+        }
+        if join_tag {
+            sql.push_str(
+                " JOIN video_tags vt ON v.id = vt.video_id JOIN tags t ON vt.tag_id = t.id",
+            );
+        }
+
+        sql.push_str(" WHERE v.status = 'complete'");
+
+        if !conditions.is_empty() {
+            let where_clause = if filter.match_mode == "or" {
+                format!(" AND ({})", conditions.join(" OR "))
+            } else {
+                format!(" AND ({})", conditions.join(" AND "))
+            };
+            sql.push_str(&where_clause);
+        }
+
+        let direction = if descending { "DESC" } else { "ASC" };
+        sql.push_str(&format!(
+            " GROUP BY v.id ORDER BY v.{} {}, v.id",
+            sort_key, direction
+        ));
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            row.get("id")
+        })?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
     }
 }
 

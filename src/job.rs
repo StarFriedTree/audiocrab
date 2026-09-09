@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex};
 use std::fs;
+use std::sync::{Arc, Mutex};
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 use crate::{
@@ -21,14 +21,21 @@ pub struct JobSummary {
 pub fn acquire_download_lock(cfg: &Config) -> Result<fslock::LockFile> {
     let download_dir = &cfg.download_dir;
 
-    fs::create_dir_all(download_dir)
-        .with_context(|| format!("failed to creaete download directory at {}", download_dir.display()))?;
+    fs::create_dir_all(download_dir).with_context(|| {
+        format!(
+            "failed to creaete download directory at {}",
+            download_dir.display()
+        )
+    })?;
 
     let path = download_dir.join("download.lock");
 
     let mut lock = fslock::LockFile::open(&path)
         .with_context(|| format!("failed to open lock file at {}", path.display()))?;
-    if !lock.try_lock().context("error while checking lock status")? {
+    if !lock
+        .try_lock()
+        .context("error while checking lock status")?
+    {
         anyhow::bail!("A download is already in progress");
     }
 
@@ -40,14 +47,17 @@ pub fn acquire_download_lock(cfg: &Config) -> Result<fslock::LockFile> {
 pub fn run_download_job(link: &str, cfg: &Config) -> Result<JobSummary> {
     let _lock = acquire_download_lock(cfg)?;
     let db = Arc::new(Mutex::new(Db::open(&cfg.db_path)?));
-    
-    eprintln! ("db connection made");
+
+    eprintln!("db connection made");
 
     let flat = download::resolve_flat(link, cfg)?;
     let source_playlist_id = flat.first().and_then(|entry| entry.playlist_id.clone());
 
     if let Some(pid) = &source_playlist_id {
-        let title = flat.first().and_then(|entry| entry.playlist_title.as_deref()).unwrap_or("");
+        let title = flat
+            .first()
+            .and_then(|entry| entry.playlist_title.as_deref())
+            .unwrap_or("");
         let handle = db.lock().unwrap();
         handle.upsert_source_playlist(pid, title, link)?;
     }
@@ -58,7 +68,10 @@ pub fn run_download_job(link: &str, cfg: &Config) -> Result<JobSummary> {
         handle.known_ids(&ids)?
     };
 
-    let survivors: Vec<&FlatEntry> = flat.iter().filter(|entry| !known.contains(&entry.id)).collect();
+    let survivors: Vec<&FlatEntry> = flat
+        .iter()
+        .filter(|entry| !known.contains(&entry.id))
+        .collect();
     let skipped = flat.len() - survivors.len();
 
     if let Some(pid) = &source_playlist_id {
@@ -84,26 +97,33 @@ pub fn run_download_job(link: &str, cfg: &Config) -> Result<JobSummary> {
         .build()?;
 
     let results: Vec<anyhow::Result<()>> = pool.install(|| {
-        full_meta.par_iter().map(|meta| {
-            {
-                let handle = db.lock().unwrap();
-                handle.mark_downloading(&meta.id)?;
-            }
+        full_meta
+            .par_iter()
+            .map(|meta| {
+                {
+                    let handle = db.lock().unwrap();
+                    handle.mark_downloading(&meta.id)?;
+                }
 
-            match download::download_one(meta, cfg) {
-                Ok(file) => {
-                    let handle = db.lock().unwrap();
-                    handle.mark_complete(&meta.id, &file.audio_path, file.thumbnail_path.as_deref())?;
-                    Ok(())
+                match download::download_one(meta, cfg) {
+                    Ok(file) => {
+                        let handle = db.lock().unwrap();
+                        handle.mark_complete(
+                            &meta.id,
+                            &file.audio_path,
+                            file.thumbnail_path.as_deref(),
+                        )?;
+                        Ok(())
+                    }
+                    Err(err) => {
+                        let handle = db.lock().unwrap();
+                        handle.mark_failed(&meta.id, &err.to_string())?;
+                        // Propagate the error so it shows up in results.is_err()
+                        Err(err)
+                    }
                 }
-                Err(err) => {
-                    let handle = db.lock().unwrap();
-                    handle.mark_failed(&meta.id, &err.to_string())?;
-                    // Propagate the error so it shows up in results.is_err()
-                    Err(err)
-                }
-            }
-        }).collect()
+            })
+            .collect()
     });
 
     let downloaded = results.iter().filter(|result| result.is_ok()).count();

@@ -16,6 +16,8 @@ pub struct Config {
     pub cookies_from_browser: Option<Browser>,
     pub concurrency: usize,
     pub retries: u32,
+    pub playcount_trigger_ratio: f64,
+    pub continue_default: bool,
 }
 
 impl Default for Config {
@@ -23,7 +25,7 @@ impl Default for Config {
         let root = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("audiocrab");
-        
+
         let download_dir = dirs::audio_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("audiocrab");
@@ -35,6 +37,8 @@ impl Default for Config {
             cookies_from_browser: None,
             concurrency: 4,
             retries: 10,
+            playcount_trigger_ratio: 0.9375,
+            continue_default: true,
         }
     }
 }
@@ -51,10 +55,11 @@ impl Config {
 
     pub fn load() -> Result<Self> {
         let path = Self::config_path();
-        
+
         if !path.exists() {
             let cfg = Self::default();
-            cfg.save().context("failed to save initial default config")?;
+            cfg.save()
+                .context("failed to save initial default config")?;
             return Ok(cfg);
         }
 
@@ -77,11 +82,15 @@ impl Config {
             .context("failed to create temporary file for saving config")?;
 
         use std::io::Write;
-        temp_file.write_all(text.as_bytes()).context("failed to write to temp config file")?;
-        
+        temp_file
+            .write_all(text.as_bytes())
+            .context("failed to write to temp config file")?;
+
         temp_file.flush().context("failed to flush data to disk")?;
 
-        temp_file.persist(&path).context("failed to overwrite old config file safely")?;
+        temp_file
+            .persist(&path)
+            .context("failed to overwrite old config file safely")?;
 
         Ok(())
     }
@@ -97,6 +106,8 @@ impl Config {
                 .map(|b| format!("{b:?}").to_ascii_lowercase()),
             "concurrency" => Some(self.concurrency.to_string()),
             "retries" => Some(self.retries.to_string()),
+            "playcount_trigger_ratio" => Some(self.playcount_trigger_ratio.to_string()),
+            "continue_default" => Some(self.continue_default.to_string()),
             _ => None,
         }
     }
@@ -114,6 +125,13 @@ impl Config {
             }
             "concurrency" => self.concurrency = value.parse().context("invalid concurrency")?,
             "retries" => self.retries = value.parse().context("invalid retries")?,
+            "playcount_trigger_ratio" => {
+                self.playcount_trigger_ratio =
+                    value.parse().context("invalid playcount_trigger_ratio")?
+            }
+            "continue_default" => {
+                self.continue_default = value.parse().context("invalid continue_default")?
+            }
             _ => anyhow::bail!("unknown config key: {key}"),
         }
         Ok(())
