@@ -9,7 +9,7 @@ mod queue;
 mod server;
 
 use crate::{
-    cli::{Cli, Commands, FilterSpec},
+    cli::{Cli, Commands, FilterSpec, SortKey},
     config::Config,
     db::Db,
     queue::{PlaybackQueue, QueueMode},
@@ -87,7 +87,10 @@ pub fn run() {
                 }
             };
             match build_initial_queue(&db, &command) {
-                Ok(queue) if !queue.is_empty() => server::run(socket, cfg.db_path.clone(), queue),
+                Ok(queue) if !queue.is_empty() => {
+                    let (filter, sort) = command_filter_and_sort(&command);
+                    server::run(socket, cfg.db_path.clone(), queue, filter, sort);
+                }
                 Ok(_) => eprintln!("no matching tracks; player was not started"),
                 Err(e) => eprintln!("could not build playback queue: {e}"),
             }
@@ -134,6 +137,16 @@ fn build_initial_queue(db: &Db, command: &Commands) -> anyhow::Result<PlaybackQu
         _ => anyhow::bail!(
             "no player running - start one first with a bare invocation, shuffle, ascending, or descending"
         ),
+    }
+}
+
+fn command_filter_and_sort(command: &Commands) -> (FilterSpec, Option<SortKey>) {
+    match command {
+        Commands::Shuffle { filter } => (filter.clone(), None),
+        Commands::Ascending { sort_by, filter } | Commands::Descending { sort_by, filter } => {
+            (filter.clone(), Some(*sort_by))
+        }
+        _ => (FilterSpec::default(), None),
     }
 }
 

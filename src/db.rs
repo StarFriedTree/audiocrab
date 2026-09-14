@@ -10,6 +10,16 @@ pub struct Db {
     conn: Connection,
 }
 
+#[derive(Debug)]
+pub struct VideoInfo {
+    pub id: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub play_count: i64,
+    pub weight: f64,
+}
+
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
@@ -346,6 +356,26 @@ impl Db {
         Ok(meta)
     }
 
+    pub fn get_video_info(&self, id: &str) -> Result<Option<VideoInfo>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, artist, album, play_count, weight
+             FROM videos WHERE id = ?",
+        )?;
+        let info = stmt
+            .query_row(params![id], |row| {
+                Ok(VideoInfo {
+                    id: row.get("id")?,
+                    title: row.get("title")?,
+                    artist: row.get("artist")?,
+                    album: row.get("album")?,
+                    play_count: row.get("play_count")?,
+                    weight: row.get("weight")?,
+                })
+            })
+            .optional()?;
+        Ok(info)
+    }
+
     pub fn upsert_player_state(
         &self,
         mode: &str,
@@ -429,10 +459,20 @@ impl Db {
         }
 
         if !filter.tags.is_empty() {
-            join_tag = true;
-            let placeholders = vec!["?"; filter.tags.len()].join(", ");
-            conditions.push(format!("t.name IN ({placeholders})"));
-            params.extend(filter.tags.iter().cloned());
+            if filter.match_mode == "or" {
+                join_tag = true;
+                let placeholders = vec!["?"; filter.tags.len()].join(", ");
+                conditions.push(format!("t.name IN ({placeholders})"));
+                params.extend(filter.tags.iter().cloned());
+            } else {
+                for tag in &filter.tags {
+                    conditions.push(
+                        "EXISTS (SELECT 1 FROM video_tags evt JOIN tags et ON et.id = evt.tag_id WHERE evt.video_id = v.id AND et.name = ?)"
+                            .to_string(),
+                    );
+                    params.push(tag.clone());
+                }
+            }
         }
 
         // Add JOINs
@@ -502,10 +542,20 @@ impl Db {
         }
 
         if !filter.tags.is_empty() {
-            join_tag = true;
-            let placeholders = vec!["?"; filter.tags.len()].join(", ");
-            conditions.push(format!("t.name IN ({placeholders})"));
-            params.extend(filter.tags.iter().cloned());
+            if filter.match_mode == "or" {
+                join_tag = true;
+                let placeholders = vec!["?"; filter.tags.len()].join(", ");
+                conditions.push(format!("t.name IN ({placeholders})"));
+                params.extend(filter.tags.iter().cloned());
+            } else {
+                for tag in &filter.tags {
+                    conditions.push(
+                        "EXISTS (SELECT 1 FROM video_tags evt JOIN tags et ON et.id = evt.tag_id WHERE evt.video_id = v.id AND et.name = ?)"
+                            .to_string(),
+                    );
+                    params.push(tag.clone());
+                }
+            }
         }
 
         if join_playlist {

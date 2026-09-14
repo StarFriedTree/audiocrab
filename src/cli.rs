@@ -51,7 +51,7 @@ pub enum Commands {
     VolumeUp,
     VolumeDown,
     Skip,
-    Stop,
+    Quit,
     Next,
     Previous,
     Shuffle {
