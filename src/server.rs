@@ -1,3 +1,4 @@
+use anyhow::Context;
 use crate::{
     cli::{Commands, FilterSpec, SortKey},
     db::Db,
@@ -29,20 +30,23 @@ pub enum ControllerMessage {
 
 type SharedPlayer = Arc<Mutex<playback::PlayerState>>;
 
+pub struct ServerHandle {
+    pub controller_tx: mpsc::Sender<ControllerMessage>,
+    pub shutdown: Arc<AtomicBool>,
+}
 
-pub fn run(
+pub fn start(
     sock_name: Name<'static>, 
     db_path: PathBuf, 
     initial_queue: PlaybackQueue,
     initial_filter: FilterSpec,
     initial_sort: Option<SortKey>,
-) {
+) -> anyhow::Result<ServerHandle> {
     let (tx, rx) = mpsc::channel();
     let output = match playback::start_player(tx.clone()) {
         Ok(state) => Arc::new(Mutex::new(state)),
         Err(error) => {
-            eprintln!("{error}");
-            return;
+            return Err(error);
         }
     };
     let controller_tx = tx.clone();
@@ -58,24 +62,32 @@ pub fn run(
     std::thread::spawn(move || monitor_default_audio_device(monitor_tx, monitor_output, monitor_shutdown));
     let listener = match ListenerOptions::new().name(sock_name).create_sync() {
         Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
-            panic!("Error: socket {} is already in use", ipc::SOCKET_NAME)
+            anyhow::bail!("Error: socket {} is already in use", ipc::SOCKET_NAME)
         }
-        result => result.expect("Failed to create socket listener"),
+        result => result.context("failed to create socket listener")?,
     };
-    listener.set_nonblocking(ListenerNonblockingMode::Accept).expect("Failed to configure socket listener");
-    while !shutdown.load(Ordering::Acquire) {
-        match listener.accept() {
-            Ok(stream) => {
-                let tx_clone = tx.clone();
-                std::thread::spawn(move || handle_connection(stream, tx_clone));
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(20)),
-            Err(error) => {
-                eprintln!("socket listener failed: {error}");
-                break;
+    listener.set_nonblocking(ListenerNonblockingMode::Accept)
+        .context("failed to configure socket listener")?;
+    let listener_shutdown = Arc::clone(&shutdown);
+    let listener_tx = tx.clone();
+    std::thread::spawn(move || {
+        while !listener_shutdown.load(Ordering::Acquire) {
+            match listener.accept() {
+                Ok(stream) => {
+                    let tx_clone = listener_tx.clone();
+                    std::thread::spawn(move || handle_connection(stream, tx_clone));
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => {
+                    eprintln!("socket listener failed: {error}");
+                    break;
+                }
             }
         }
-    }
+    });
+    Ok(ServerHandle { controller_tx: tx, shutdown })
 }
 
 fn handle_connection(mut stream: impl Read + Write, tx: mpsc::Sender<ControllerMessage>) {
@@ -198,6 +210,7 @@ fn controller_loop(
                 );
                 let _ = request.response_tx.send(response);
                 if quit {
+                    persist_state(&db, &queue, &current_filter, current_sort.as_ref());
                     shutdown.store(true, Ordering::Release);
                     break;
                 }

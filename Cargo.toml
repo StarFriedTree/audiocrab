@@ -20,6 +20,10 @@ tempfile = "3.27.0"
 thiserror = "2.0.20"
 toml = "1.1.4"
 url = "2.5.8"
+souvlaki = "0.8.3"
+windows = { version = "0.62.2", features = ["Win32_System_Console"] }
+iced = "0.14.0"
+tray-icon = "0.25.1"
 
 [profile.dev]
 debug = 0

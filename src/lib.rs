@@ -2,6 +2,7 @@ pub mod cli;
 mod config;
 mod db;
 mod download;
+mod gui;
 mod ipc;
 mod job;
 mod playback;
@@ -89,7 +90,14 @@ pub fn run() {
             match build_initial_queue(&db, &command) {
                 Ok(queue) if !queue.is_empty() => {
                     let (filter, sort) = command_filter_and_sort(&command);
-                    server::run(socket, cfg.db_path.clone(), queue, filter, sort);
+                    match server::start(socket, cfg.db_path.clone(), queue, filter, sort) {
+                        Ok(handle) => {
+                            if let Err(error) = gui::run(handle) {
+                                eprintln!("GUI failed: {error}");
+                            }
+                        }
+                        Err(error) => eprintln!("server failed to start: {error}"),
+                    }
                 }
                 Ok(_) => eprintln!("no matching tracks; player was not started"),
                 Err(e) => eprintln!("could not build playback queue: {e}"),
