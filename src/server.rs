@@ -14,6 +14,7 @@ use std::{
     sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc},
     time::Duration,
 };
+use futures::channel::mpsc as async_mpsc;
 
 #[derive(Debug)]
 pub struct ControllerRequest {
@@ -28,11 +29,28 @@ pub enum ControllerMessage {
     AudioDeviceChanged,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PlayerStatus {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub is_paused: bool,
+    pub volume: f32,
+    pub queue_position: usize,
+    pub queue_length: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum StatusEvent {
+    Update(PlayerStatus),
+    ShuttingDown,
+}
+
 type SharedPlayer = Arc<Mutex<playback::PlayerState>>;
 
 pub struct ServerHandle {
     pub controller_tx: mpsc::Sender<ControllerMessage>,
     pub shutdown: Arc<AtomicBool>,
+    pub status_rx: async_mpsc::UnboundedReceiver<StatusEvent>,
 }
 
 pub fn start(
@@ -53,8 +71,9 @@ pub fn start(
     let output_clone = Arc::clone(&output);
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = Arc::clone(&shutdown);
+    let (status_tx, status_rx) = async_mpsc::unbounded();
     std::thread::spawn(move || {
-        controller_loop(rx, output_clone, db_path, initial_queue, initial_filter, initial_sort, controller_tx, shutdown_clone)
+        controller_loop(rx, output_clone, db_path, initial_queue, initial_filter, initial_sort, controller_tx, shutdown_clone, status_tx)
     });
     let monitor_shutdown = Arc::clone(&shutdown);
     let monitor_output = Arc::clone(&output);
@@ -87,7 +106,7 @@ pub fn start(
             }
         }
     });
-    Ok(ServerHandle { controller_tx: tx, shutdown })
+    Ok(ServerHandle { controller_tx: tx, shutdown, status_rx })
 }
 
 fn handle_connection(mut stream: impl Read + Write, tx: mpsc::Sender<ControllerMessage>) {
@@ -143,6 +162,7 @@ fn controller_loop(
     mut current_sort: Option<SortKey>,
     self_tx: mpsc::Sender<ControllerMessage>,
     shutdown: Arc<AtomicBool>,
+    status_tx: async_mpsc::UnboundedSender<StatusEvent>,
 ) {
     let db = match Db::open(&db_path) {
         Ok(db) => db,
@@ -167,6 +187,7 @@ fn controller_loop(
     
     load_lookahead(&db, &output, &queue, &self_tx);
     persist_state(&db, &queue, &current_filter, current_sort.as_ref());
+    push_status(&db, &output, &queue, &status_tx);
 
     while let Ok(message) = rx.recv() {
         match message {
@@ -179,6 +200,7 @@ fn controller_loop(
                 expected = queue.current_id().map(str::to_string);
                 load_lookahead(&db, &output, &queue, &self_tx);
                 persist_state(&db, &queue, &current_filter, current_sort.as_ref());
+                push_status(&db, &output, &queue, &status_tx);
             }
             ControllerMessage::AudioStreamError => {
                 if recover_audio_output(&output, &self_tx) {
@@ -186,6 +208,7 @@ fn controller_loop(
                         let _ = load_track(&db, &output, Some(id), &self_tx);
                     }
                     load_lookahead(&db, &output, &queue, &self_tx);
+                    push_status(&db, &output, &queue, &status_tx);
                 }
             }
             ControllerMessage::AudioDeviceChanged => {
@@ -194,6 +217,7 @@ fn controller_loop(
                         let _ = load_track(&db, &output, Some(id), &self_tx);
                     }
                     load_lookahead(&db, &output, &queue, &self_tx);
+                    push_status(&db, &output, &queue, &status_tx);
                 }
             }
             ControllerMessage::Ipc(request) => {
@@ -211,12 +235,35 @@ fn controller_loop(
                 let _ = request.response_tx.send(response);
                 if quit {
                     persist_state(&db, &queue, &current_filter, current_sort.as_ref());
+                    let _ = status_tx.unbounded_send(StatusEvent::ShuttingDown);
                     shutdown.store(true, Ordering::Release);
                     break;
                 }
+                push_status(&db, &output, &queue, &status_tx);
             }
         }
     }
+}
+
+fn push_status(
+    db: &Db,
+    output: &SharedPlayer,
+    queue: &PlaybackQueue,
+    status_tx: &async_mpsc::UnboundedSender<StatusEvent>,
+) {
+    let player = current_player(output);
+    let info = queue
+        .current_id()
+        .and_then(|id| db.get_video_info(id).ok().flatten());
+    let status = PlayerStatus {
+        title: info.as_ref().map(|i| i.title.clone()),
+        artist: info.as_ref().and_then(|i| i.artist.clone()),
+        is_paused: player.is_paused(),
+        volume: player.volume(),
+        queue_position: queue.cursor(),
+        queue_length: queue.len(),
+    };
+    let _ = status_tx.unbounded_send(StatusEvent::Update(status));
 }
 
 fn handle_command(
