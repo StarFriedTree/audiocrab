@@ -203,18 +203,24 @@ fn controller_loop(
                 push_status(&db, &output, &queue, &status_tx);
             }
             ControllerMessage::AudioStreamError => {
+                let position = current_player(&output).get_pos();
                 if recover_audio_output(&output, &self_tx) {
                     if let Some(id) = expected.as_deref() {
-                        let _ = load_track(&db, &output, Some(id), &self_tx);
+                        if load_track(&db, &output, Some(id), &self_tx).is_some() {
+                            let _ = current_player(&output).try_seek(position);
+                        }
                     }
                     load_lookahead(&db, &output, &queue, &self_tx);
                     push_status(&db, &output, &queue, &status_tx);
                 }
             }
             ControllerMessage::AudioDeviceChanged => {
+                let position = current_player(&output).get_pos();
                 if recover_audio_output(&output, &self_tx) {
                     if let Some(id) = expected.as_deref() {
-                        let _ = load_track(&db, &output, Some(id), &self_tx);
+                        if load_track(&db, &output, Some(id), &self_tx).is_some() {
+                            let _ = current_player(&output).try_seek(position);
+                        }
                     }
                     load_lookahead(&db, &output, &queue, &self_tx);
                     push_status(&db, &output, &queue, &status_tx);

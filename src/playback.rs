@@ -3,10 +3,14 @@ use std::{
     io::BufReader,
     path::Path,
     sync::{Arc, mpsc},
+    time::Duration,
 };
 
 use cpal::traits::HostTrait;
-use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
+use rodio::{
+    ChannelCount, Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source,
+    source::SeekError,
+};
 
 use crate::server::ControllerMessage;
 
@@ -91,9 +95,55 @@ pub fn append_track_with_finish_signal(
         Ok(source) => source,
         Err(_) => return false,
     };
-    player.append(source);
-    player.append(rodio::source::EmptyCallback::new(Box::new(move || {
-        let _ = tx.send(ControllerMessage::TrackFinished(id.clone()));
-    })));
+    player.append(OnEnd::new(source, move || {
+        let _ = tx.send(ControllerMessage::TrackFinished(id));
+    }));
     true
+}
+
+struct OnEnd<S> {
+    inner: S,
+    on_end: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl<S> OnEnd<S> {
+    fn new(inner: S, on_end: impl FnOnce() + Send + 'static) -> Self {
+        Self { inner, on_end: Some(Box::new(on_end)) }
+    }
+}
+
+impl<S: Source> Iterator for OnEnd<S> {
+    type Item = S::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.inner.next();
+        if item.is_none() {
+            if let Some(f) = self.on_end.take() {
+                f();
+            }
+        }
+        item
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<S: Source> Source for OnEnd<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
+    }
+    fn channels(&self) -> ChannelCount {
+        self.inner.channels()
+    }
+    fn sample_rate(&self) -> SampleRate {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        self.inner.total_duration()
+    }
+    fn try_seek(&mut self, pos: Duration) -> Result<(), SeekError> {
+        self.inner.try_seek(pos)
+    }
 }
